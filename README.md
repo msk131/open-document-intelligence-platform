@@ -83,6 +83,16 @@ Do not bundle every parser into one all-in-one container. Apache Tika brings a J
 | `worker-pdf-native` | Born-digital PDFs | PyMuPDF/Docling-style PDF stack, medium CPU. |
 | `worker-ocr` | Scanned PDFs, PNG, JPG, JPEG | Tesseract/PaddleOCR, high CPU/GPU optional, strict limits. |
 | `worker-table` | Complex tables and table repair | Lower concurrency, quality-focused processing. |
+| `worker-llm` | Optional enrichment, summarization, extraction, redaction review | Slowest path, rate-limit aware, strict budgets. |
+
+Enterprise deployments separate compute tiers:
+
+```text
+Tier-1 CPU workers: high-replica parsing for clean text, Office files, CSV, and born-digital PDFs.
+Tier-2 GPU/VLM workers: scale-to-zero or spot GPU pools for scanned PDFs, layout detection, OCR, and visual models.
+```
+
+This prevents a 50 MB scanner dump from blocking a batch of 10,000 clean emails and lets expensive GPU pools scale independently.
 
 Before routing, every file goes through a pre-flight inspector that checks MIME, magic bytes, file size, page count, text density, image density, encryption, corruption, and image dimensions. This prevents a fake extension or scanned PDF from being sent to the wrong parser. For example, a large scanned PDF should be routed to `queue_ocr`, not to native PyMuPDF extraction where it may return empty text or exhaust worker memory.
 
@@ -94,11 +104,18 @@ queue_office  -> worker-office
 queue_pdf     -> worker-pdf-native
 queue_ocr     -> worker-ocr
 queue_table   -> worker-table
+queue_llm     -> worker-llm
 ```
 
-Each queue has its own concurrency, timeout, retry, dead-letter, and autoscaling policy. A 1 KB TXT file should never wait behind a 500-page scanned PDF.
+Each queue has its own concurrency, timeout, retry, dead-letter, and autoscaling policy. A 1 KB TXT file should never wait behind a 500-page scanned PDF, and OCR jobs should never wait behind slow LLM inference.
 
 PostgreSQL is not used as a blob store or high-frequency progress store. Large normalized outputs, intermediate chunks, page artifacts, full quality reports, and detailed lineage are written to MinIO/S3. Redis holds short-lived active pipeline state with TTLs. PostgreSQL stores durable records and pointers.
+
+LLM processing is optional and isolated behind its own queue because rate limits, token budgets, and timeout behavior differ from parsing and OCR. LLM workers must use idempotency keys, bounded retries, request budgets, and per-provider circuit breakers. Layout-aware chunking must preserve source anchors so paragraphs and multi-page tables can be reconstructed before LLM calls.
+
+Enterprise storage is tenant-scoped and immutable by default. Source documents use object paths such as `s3://tenant-id/inputs/year/month/day/source_hash.ext`, while large structural matrices, chunks, quality reports, and full lineage artifacts live in object storage or analytical/cold partitions rather than large PostgreSQL JSON blobs.
+
+The normalization layer emits a quality assertion profile for every document. Empty extraction fails hard, low-confidence output is routed to review, and only verified or policy-approved artifacts are sent to downstream search/RAG indexes. PII redaction or sensitive-data flagging runs before open search indexing.
 
 ## Design Principles
 
@@ -111,6 +128,8 @@ PostgreSQL is not used as a blob store or high-frequency progress store. Large n
 - **Treat images safely**: image files must pass MIME, magic-byte, dimension, and corruption checks before OCR.
 - **Isolate heavy dependencies**: parser runtimes should be split into specialized worker images instead of one bloated container.
 - **Separate workload classes**: light text files and heavy OCR/table jobs should not compete in the same queue.
+- **Keep data inside the boundary**: deployment must support fully on-premises, VPC-isolated, air-gapped operation.
+- **Fail closed on quality**: empty or low-confidence extraction should stop or route to review, never silently index.
 
 ## Output Model
 
@@ -151,6 +170,7 @@ open-document-intelligence-platform/
 │   ├── worker-office/
 │   ├── worker-pdf-native/
 │   ├── worker-ocr/
+│   ├── worker-llm/
 │   └── worker-table/
 ├── packages/
 │   ├── core/
@@ -168,12 +188,22 @@ open-document-intelligence-platform/
 │   │   ├── parser-routing-matrix.md
 │   │   ├── worker-and-queue-strategy.md
 │   │   ├── table-normalization.md
+│   │   ├── chunking-and-context-reconstruction.md
+│   │   ├── llm-backpressure-and-rate-limits.md
+│   │   ├── pipeline-idempotency-and-tracing.md
+│   │   ├── slo-and-capacity-planning.md
+│   │   ├── compute-tier-architecture.md
+│   │   ├── enterprise-quality-guardrails.md
+│   │   ├── compliance-and-security.md
+│   │   ├── intermediate-graph-storage.md
 │   │   └── storage-and-lineage.md
 │   └── adr/
 │       ├── 0001-specialized-parser-workers.md
 │       ├── 0002-isolated-workload-queues.md
 │       ├── 0003-html-table-normalization.md
-│       └── 0004-storage-and-lineage-boundaries.md
+│       ├── 0004-storage-and-lineage-boundaries.md
+│       ├── 0005-llm-pipeline-isolation.md
+│       └── 0006-enterprise-compute-and-security.md
 ```
 
 ## Current Status

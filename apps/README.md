@@ -12,3 +12,4 @@ The platform uses a modular monorepo, but each app can become a separate contain
 | `worker-pdf-native` | Born-digital PDF parsing and layout extraction. |
 | `worker-ocr` | Scanned PDFs, PNG, JPG, JPEG, and OCR-heavy files. |
 | `worker-table` | Complex table extraction, repair, and normalization. |
+| `worker-llm` | Optional LLM enrichment, extraction, summarization, classification, and redaction review. |

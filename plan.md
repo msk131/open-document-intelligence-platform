@@ -77,6 +77,15 @@ Runtime services and workers:
 | worker-pdf-native | Born-digital PDF parsing and layout extraction. | `queue_pdf` |
 | worker-ocr | Scanned PDFs, PNG, JPG, JPEG, OCR-heavy files. | `queue_ocr` |
 | worker-table | Table repair, table normalization, multi-page table handling. | `queue_table` |
+| worker-llm | Optional LLM enrichment, extraction, summarization, redaction review. | `queue_llm` |
+
+Compute tiers:
+
+| Tier | Workers | Scaling posture |
+| --- | --- | --- |
+| Tier-1 CPU | `worker-light`, `worker-office`, `worker-pdf-native` | high replica count, low cost, fast scale-out |
+| Tier-2 GPU/VLM | `worker-ocr`, layout/VLM profiles | dynamic GPU/spot pool, scale-to-zero when idle |
+| Tier-3 Enrichment | `worker-table`, `worker-llm` | controlled concurrency, budget/rate-limit driven |
 
 ## Phase 3: Analyze
 
@@ -93,14 +102,25 @@ Key risks and controls:
 | Scanned document failure | OCR path and page-level confidence. |
 | Light jobs stuck behind heavy jobs | Separate queues by workload class and set worker-specific concurrency limits. |
 | Queue gridlock from uneven job sizes | Use isolated queues with per-queue concurrency, timeouts, retries, dead letters, and autoscaling. |
+| CPU and GPU workloads share one pool | Decouple Tier-1 CPU workers from Tier-2 GPU/VLM workers with independent queues and autoscaling. |
+| LLM inference bottlenecks OCR/parsing | Put LLM work on `queue_llm` with rate-limit budgets, circuit breakers, and provider-specific retries. |
+| LLM timeout or rate-limit retry storm | Use bounded exponential backoff, token/request budgets, idempotency keys, and dead-letter handling. |
 | Expensive OCR/VLM compute | Make OCR/VLM optional, route only when preflight proves it is needed, and enforce quotas/timeouts. |
+| Chunking loses document context | Preserve source anchors and reconstruct paragraphs, sections, and multi-page tables before LLM/RAG export. |
 | Image spoofing or malformed image | Validate MIME, extension, magic bytes, dimensions, decoder health, and max pixels. |
 | Large file pressure | Size limits, streaming, worker isolation, timeout policy. |
 | Sensitive data exposure | No secrets in logs, object storage access control, optional redaction hooks. |
+| PII reaches search index | Run sensitive-data detection/redaction or flagging before OpenSearch/RAG indexing. |
 | Non-repeatable output | Parser versioning, source file hash, deterministic artifact naming. |
 | PostgreSQL overloaded by lineage/chunks | Keep PostgreSQL for compact metadata and pointers; store active state in Redis and large artifacts in MinIO/S3. |
+| Tenant lineage is not audit-ready | Store immutable tenant-scoped source paths, page/block/table anchors, bounding boxes, artifact hashes, and parser versions. |
+| Large structural matrices bloat PostgreSQL | Store page/block/chunk graphs as immutable artifacts or analytical partitions, with PostgreSQL pointers. |
 | Redis state loss | Treat Redis as transient only; recover from PostgreSQL final records and object storage artifacts. |
+| Asynchronous pipeline becomes untraceable | Propagate OpenTelemetry trace IDs, stage IDs, idempotency keys, and artifact hashes through every stage. |
+| Retry duplicates writes or redaction steps | Make stage outputs deterministic and idempotent; write staged artifacts then finalize once. |
+| Unknown throughput and latency targets | Define initial SLO placeholders and revise them with benchmark data per file type and worker class. |
 | Compliance and private data handling | Support air-gapped deployment, tenant isolation, audit logs, retention policies, and optional redaction. |
+| Low-quality extraction silently flows downstream | Quality assertions fail empty extraction and route low-confidence outputs to review. |
 | Open-source sustainability | Keep the local stack runnable without GPUs and make advanced OCR/VLM engines pluggable. |
 
 ## Phase 4: Act
@@ -113,12 +133,14 @@ Key risks and controls:
 - Add parse job table and health endpoint.
 - Create modular monorepo structure with `apps/` for deployables and `packages/` for shared contracts.
 - Add artifact pointer model instead of storing extracted blobs in PostgreSQL.
+- Add tenant-scoped immutable object key convention for source documents.
 
 Done when:
 
 - A file can be uploaded, hashed, stored, and tracked.
 - The API can run without installing every parser dependency.
 - PostgreSQL stores metadata and pointers only for source artifacts.
+- Source files are stored under tenant/date/hash object keys with immutable metadata.
 
 ### Slice 2: Type Detection And Routing
 
@@ -190,6 +212,7 @@ Done when:
 ### Slice 6: Quality And Operations
 
 - Add quality report.
+- Add quality assertion profile: status, score, element count, character density, confidence statistics, and review reason.
 - Add failed-job retry.
 - Add parser version tracking.
 - Add dashboards for parse success rate, duration, file type, and low-confidence outputs.
@@ -198,10 +221,30 @@ Done when:
 - Add queue admission controls so saturated heavy queues do not affect light parsing.
 - Add Redis-backed active job progress and S3-backed full lineage artifacts.
 - Add reconciliation for stale Redis jobs and orphaned staged artifacts.
+- Add OpenTelemetry trace propagation across intake, preflight, queues, workers, storage, and export.
+- Add idempotency keys for every pipeline stage and deterministic artifact paths for retries.
+- Add PII detection/redaction or sensitive-data flagging before indexing to OpenSearch/RAG.
 
 Done when:
 
 - Parsing failures and low-quality outputs are visible and replayable.
+- Empty extraction fails with `EMPTY_EXTRACTION_ALERT`; low confidence routes to human review.
 - Heavy OCR/table jobs cannot starve light parsing jobs.
 - `queue_light` remains responsive while `queue_ocr` or `queue_table` is saturated.
 - PostgreSQL is not updated for every page/chunk/progress tick.
+- A failed worker can retry without duplicating database writes, artifacts, or redaction outputs.
+
+### Slice 7: Chunking, Context, And Optional LLM Enrichment
+
+- Add source-anchored chunking with document ID, page range, block IDs, table IDs, and bounding boxes.
+- Add context reconstruction for multi-page paragraphs, section continuations, and tables split across pages.
+- Add optional `worker-llm` and `queue_llm` for LLM enrichment after deterministic parsing succeeds.
+- Add LLM rate-limit handling, timeout retry policy, token budgets, and provider circuit breakers.
+- Add target throughput and latency SLO placeholders for API intake, parse completion, OCR, table repair, and LLM enrichment.
+
+Done when:
+
+- LLM work cannot block OCR, table repair, native parsing, or light text parsing.
+- Multi-page table and paragraph chunks can be recombined using source anchors.
+- Every LLM request has trace ID, idempotency key, prompt/config version, input artifact hash, and output artifact hash.
+- SLOs are documented per stage and tied to queue metrics.

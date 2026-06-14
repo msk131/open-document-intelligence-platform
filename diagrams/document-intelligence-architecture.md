@@ -14,11 +14,13 @@ flowchart TB
     QPDF["queue_pdf"]
     QOCR["queue_ocr"]
     QTABLE["queue_table"]
+    QLLM["queue_llm"]
     WL["worker-light\nTXT, MD, HTML, CSV"]
     WO["worker-office\nDOCX, PPTX, XLSX, EML"]
     WP["worker-pdf-native\nborn-digital PDF"]
     WOC["worker-ocr\nscanned PDF, PNG, JPG, JPEG"]
     WT["worker-table\ntable repair"]
+    WLLM["worker-llm\noptional enrichment"]
 
     DETECT["Pre-Flight Inspector\nMIME, magic bytes, page sampling,\ntext density, image density,\ncorruption, limits"]
     ROUTER["Parser Router\ncondition-based matrix"]
@@ -26,7 +28,10 @@ flowchart TB
     OCR["OCR Engine\nTesseract / PaddleOCR\nscanned PDF, PNG, JPG, JPEG"]
     NORMALIZE["Normalizer\ncommon document model"]
     QUALITY["Quality Checks\nempty output, confidence,\nmissing pages, table issues"]
+    PII["PII / Sensitive Data Gate\nredact or flag before indexing"]
     EXPORT["Artifact Export\nJSON, Markdown, text, tables"]
+    CHUNK["Chunking\nsource anchors and context"]
+    LLM["LLM Enrichment\nrate-limited optional stage"]
     DOWNSTREAM["Downstream Systems\nRAG, search, analytics"]
     OBS["Observability\nmetrics, traces, logs"]
 
@@ -43,11 +48,13 @@ flowchart TB
     ROUTEQUEUE --> QPDF
     ROUTEQUEUE --> QOCR
     ROUTEQUEUE --> QTABLE
+    ROUTEQUEUE --> QLLM
     QLIGHT --> WL
     QOFFICE --> WO
     QPDF --> WP
     QOCR --> WOC
     QTABLE --> WT
+    QLLM --> WLLM
     WL --> PARSERS
     WO --> PARSERS
     WP --> PARSERS
@@ -56,9 +63,16 @@ flowchart TB
     PARSERS --> NORMALIZE
     OCR --> NORMALIZE
     NORMALIZE --> QUALITY
-    QUALITY --> EXPORT
+    QUALITY --> PII
+    PII --> EXPORT
+    EXPORT --> CHUNK
+    CHUNK --> LLM
+    WLLM --> LLM
     EXPORT --> STORE
     EXPORT --> META
+    CHUNK --> STORE
+    LLM --> STORE
+    LLM --> META
     EXPORT --> DOWNSTREAM
     API --> OBS
     WL --> OBS
@@ -66,6 +80,10 @@ flowchart TB
     WP --> OBS
     WOC --> OBS
     WT --> OBS
+    WLLM --> OBS
+    CHUNK --> OBS
+    LLM --> OBS
+    PII --> OBS
     QUALITY --> OBS
 ```
 
@@ -79,7 +97,26 @@ flowchart TB
 6. Specialized workers run only the parser dependencies they need.
 7. Output is normalized into a common document model.
 8. Quality checks flag incomplete or low-confidence extraction.
-9. Artifacts are exported for RAG, search, analytics, and review.
+9. PII/sensitive-data gates redact or flag content before open search/RAG indexing.
+10. Artifacts are exported with source anchors for RAG, search, analytics, and review.
+11. Optional LLM enrichment runs through a separate rate-limited queue.
+
+## Compute Tiering
+
+```mermaid
+flowchart TB
+    GATEWAY["Enterprise API Gateway"]
+    PROFILE["Fast Profiling Stage"]
+    CPU["Tier-1 CPU Workers\nPyMuPDF, python-docx, openpyxl\nhigh replica count"]
+    GPU["Tier-2 GPU/VLM Workers\nDocling, PaddleOCR, visual layout\nscale-to-zero / spot GPU"]
+    NORM["Document Normalizer v1"]
+
+    GATEWAY --> PROFILE
+    PROFILE -->|"text/direct stream"| CPU
+    PROFILE -->|"visual/VLM matrix"| GPU
+    CPU --> NORM
+    GPU --> NORM
+```
 
 ## Storage Ownership
 
@@ -96,6 +133,23 @@ flowchart TB
     S3 -->|"object key + hash"| PG
 ```
 
+## Quality And Security Gate
+
+```mermaid
+flowchart LR
+    NORM["normalized output"]
+    QA["quality assertion\nVERIFIED / REVIEW_REQUIRED / FAIL"]
+    REDACT["PII redaction or flagging"]
+    REVIEW["human review queue"]
+    INDEX["OpenSearch / RAG index"]
+
+    NORM --> QA
+    QA -->|"FAIL"| REVIEW
+    QA -->|"REVIEW_REQUIRED"| REVIEW
+    QA -->|"VERIFIED"| REDACT
+    REDACT --> INDEX
+```
+
 ## Worker Isolation
 
 ```mermaid
@@ -107,6 +161,7 @@ flowchart LR
     P["worker-pdf-native\nPDF/layout deps"]
     OCRW["worker-ocr\nOCR/ML deps"]
     T["worker-table\ntable repair deps"]
+    LLM["worker-llm\nrate-limited LLM deps"]
 
     API --> QR
     QR --> L
@@ -114,6 +169,7 @@ flowchart LR
     QR --> P
     QR --> OCRW
     QR --> T
+    QR --> LLM
 ```
 
 ## Queue Isolation
@@ -123,6 +179,7 @@ flowchart LR
     PREFLIGHT["Preflight classification"]
     LIGHT["queue_light\nshort timeout\nhigh concurrency"]
     HEAVY["queue_ocr / queue_table\nlong timeout\nlow concurrency"]
+    LLMQ["queue_llm\nrate-limited\nbudgeted retries"]
     TXT["1 KB TXT"]
     PDF["500-page scanned PDF"]
 
@@ -130,6 +187,40 @@ flowchart LR
     PDF --> PREFLIGHT
     PREFLIGHT --> LIGHT
     PREFLIGHT --> HEAVY
+    PREFLIGHT --> LLMQ
+```
+
+## LLM Isolation
+
+```mermaid
+flowchart LR
+    PARSE["Deterministic parsing complete"]
+    CHUNKS["source-anchored chunks"]
+    QLLM["queue_llm\nrate limits, token budgets"]
+    WLLM["worker-llm\ncircuit breaker, idempotency"]
+    ART["LLM output artifacts\nhash + lineage"]
+
+    PARSE --> CHUNKS
+    CHUNKS --> QLLM
+    QLLM --> WLLM
+    WLLM --> ART
+```
+
+## Idempotent Pipeline Trace
+
+```mermaid
+flowchart LR
+    STAGE["pipeline stage"]
+    KEY["idempotency key\njob + stage + input hash + config"]
+    TRACE["OpenTelemetry trace context"]
+    STAGED["staged artifact"]
+    FINAL["final artifact pointer"]
+
+    STAGE --> KEY
+    STAGE --> TRACE
+    KEY --> STAGED
+    TRACE --> STAGED
+    STAGED --> FINAL
 ```
 
 ## PDF Preflight Routing

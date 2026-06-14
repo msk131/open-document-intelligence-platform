@@ -37,3 +37,19 @@ MinIO/S3 stores artifact payloads:
 - full lineage report
 
 Redis stores hot mutable state and should not be treated as durable audit history.
+
+## Tenant Object Keys
+
+Source objects should use immutable tenant-scoped paths:
+
+```text
+tenants/{tenant_id}/inputs/{yyyy}/{mm}/{dd}/{source_hash}.{ext}
+```
+
+Derived artifacts should live under:
+
+```text
+tenants/{tenant_id}/documents/{document_id}/...
+```
+
+The database stores object keys, hashes, sizes, content types, tenant ID, retention class, and encryption metadata.

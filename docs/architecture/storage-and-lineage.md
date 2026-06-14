@@ -122,21 +122,23 @@ Every output artifact should be traceable to:
 Artifacts should use deterministic paths:
 
 ```text
-documents/{document_id}/source/original
-documents/{document_id}/derived/safe-input
-documents/{document_id}/outputs/document.json
-documents/{document_id}/outputs/document.md
-documents/{document_id}/outputs/document.txt
-documents/{document_id}/outputs/pages/{page_number}.json
-documents/{document_id}/outputs/chunks/{chunk_id}.json
-documents/{document_id}/outputs/tables/{table_id}.html
-documents/{document_id}/outputs/tables/{table_id}.json
-documents/{document_id}/metadata/quality.json
-documents/{document_id}/metadata/lineage.json
-documents/{document_id}/metadata/steps/{step_id}.json
+tenants/{tenant_id}/inputs/{yyyy}/{mm}/{dd}/{source_hash}.{ext}
+tenants/{tenant_id}/documents/{document_id}/derived/safe-input
+tenants/{tenant_id}/documents/{document_id}/outputs/document.json
+tenants/{tenant_id}/documents/{document_id}/outputs/document.md
+tenants/{tenant_id}/documents/{document_id}/outputs/document.txt
+tenants/{tenant_id}/documents/{document_id}/outputs/pages/{page_number}.json
+tenants/{tenant_id}/documents/{document_id}/outputs/chunks/{chunk_id}.json
+tenants/{tenant_id}/documents/{document_id}/outputs/tables/{table_id}.html
+tenants/{tenant_id}/documents/{document_id}/outputs/tables/{table_id}.json
+tenants/{tenant_id}/documents/{document_id}/metadata/quality.json
+tenants/{tenant_id}/documents/{document_id}/metadata/lineage.json
+tenants/{tenant_id}/documents/{document_id}/metadata/steps/{step_id}.json
 ```
 
 The database stores pointers, hashes, sizes, content types, and retention metadata for these artifacts.
+
+Source objects should be immutable. Reprocessing creates new derived artifacts and lineage records, not mutation of the original input.
 
 ## Lineage Persistence
 
